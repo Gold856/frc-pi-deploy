@@ -1,0 +1,131 @@
+plugins {
+    id "java"
+    id "edu.wpi.first.GradleRIO" version "2024.1.1"
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+import edu.wpi.first.deployutils.deploy.target.RemoteTarget
+import edu.wpi.first.deployutils.deploy.artifact.*
+import edu.wpi.first.deployutils.deploy.target.location.SshDeployLocation
+wpi.maven.useLocal = false
+def ROBOT_MAIN_CLASS = "frc.robot.Main"
+configurations {
+    piDebug
+    piRelease
+    compileClasspath.extendsFrom piRelease
+}
+// Define my targets (RoboRIO) and artifacts (deployable files)
+// This is added by GradleRIO's backing project DeployUtils.
+deploy {
+    targets {
+        raspberryPi(RemoteTarget) {
+            directory = '/home/pi/robot'  // The root directory to start deploying to. Default: user home
+            locations {
+                ssh(SshDeployLocation) {
+                    address = "10.0.20.2"
+                    user = 'root'
+                }
+            }
+            artifacts {
+                libraries(FileCollectionArtifact) {
+                    directory = 'lib'
+                    files = configurations.piRelease
+                }
+                unpack(CommandArtifact) {
+                    directory = 'lib'
+                    command = "unzip -o './*' -x *.md *.txt"
+                    dependsOn("deploylibrariesraspberryPi")
+                }
+                robotJar(JavaArtifact) {
+                    jarTask = jar
+                }
+                deployFiles(FileCollectionArtifact) {
+                    files = fileTree("src/main/deploy")
+                }
+                permission(CommandArtifact) {
+                    command = "chmod a+x ./*"
+                    dependsOn("deploydeployFilesraspberryPi")
+                }
+                createStartCommand(CommandArtifact) {
+                    command = "echo java -jar " + project.getName() + ".jar > robotCommand; chmod a+x robotCommand"
+                }
+                killRobotProgram(CommandArtifact) {
+                    command = "pkill java"
+                }
+                startRobotProgram(CommandArtifact) {
+                    dependsOn("deployunpackraspberryPi")
+                    dependsOn("deployrobotJarraspberryPi")
+                    dependsOn("deploydeployFilesraspberryPi")
+                    dependsOn("deploypermissionraspberryPi")
+                    dependsOn("deploycreateStartCommandraspberryPi")
+                    dependsOn("deploykillRobotProgramraspberryPi")
+                    command = ". ./envVariables.sh; ./startRobot.sh 2> /dev/null"
+                }
+            }
+        }
+    }
+}
+def deployArtifact = deploy.targets.raspberryPi.artifacts.robotJar
+
+// Set to true to use debug for JNI.
+wpi.java.debugJni = false
+
+// Set this to true to enable desktop support.
+def includeDesktopSupport = true
+
+// Defining my dependencies. In this case, WPILib (+ friends), and vendor libraries.
+// Also defines JUnit 5.
+dependencies {
+    implementation wpi.java.deps.wpilib()
+    implementation wpi.java.vendor.java()
+
+    piDebug wpi.java.deps.wpilibJniDebug(wpi.platforms.linuxarm64)
+    piDebug wpi.java.vendor.jniDebug(wpi.platforms.linuxarm64)
+
+    piRelease wpi.java.deps.wpilibJniRelease(wpi.platforms.linuxarm64)
+    piRelease wpi.java.vendor.jniRelease(wpi.platforms.linuxarm64)
+
+    nativeDebug wpi.java.deps.wpilibJniDebug(wpi.platforms.desktop)
+    nativeDebug wpi.java.vendor.jniDebug(wpi.platforms.desktop)
+    simulationDebug wpi.sim.enableDebug()
+
+    nativeRelease wpi.java.deps.wpilibJniRelease(wpi.platforms.desktop)
+    nativeRelease wpi.java.vendor.jniRelease(wpi.platforms.desktop)
+    simulationRelease wpi.sim.enableRelease()
+
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.2'
+    testImplementation 'org.junit.jupiter:junit-jupiter-params:5.8.2'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.2'
+}
+
+test {
+    useJUnitPlatform()
+    systemProperty 'junit.jupiter.extensions.autodetection.enabled', 'true'
+}
+
+// Simulation configuration (e.g. environment variables).
+wpi.sim.addGui().defaultEnabled = true
+wpi.sim.addDriverstation()
+
+// Setting up my Jar File. In this case, adding all libraries into the main jar ('fat jar')
+// in order to make them all available at runtime. Also adding the manifest so WPILib
+// knows where to look for our Robot Class.
+jar {
+    from { configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }
+    from sourceSets.main.allSource
+    manifest edu.wpi.first.gradlerio.GradleRIOPlugin.javaManifest(ROBOT_MAIN_CLASS)
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+}
+
+// Configure jar and deploy tasks
+deployArtifact.jarTask = jar
+wpi.java.configureExecutableTasks(jar)
+wpi.java.configureTestTasks(test)
+
+// Configure string concat to always inline compile
+tasks.withType(JavaCompile) {
+    options.compilerArgs.add '-XDstringConcat=inline'
+}
